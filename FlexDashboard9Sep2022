@@ -1,0 +1,1206 @@
+---
+title: "KHCC FlexDashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    storyboard: TRUE
+    orientation: row
+    vertical_layout: fill
+    source_code: embed
+    css: inst/assets/styles-auth.css
+runtime: shiny
+Date: "18-Aug-2022"
+---
+
+
+```{css}
+    .chart-shim {
+      overflow: auto;
+    }
+```
+    
+```{r global, include=FALSE}
+# load data in 'global' chunk so it can be shared by all users of the dashboard
+library(datasets)
+
+library(flexdashboard)
+library(datasets)
+library(shiny)
+library(survival)
+library(survminer)
+library(dplyr)
+library(GGally)
+library(ggfortify)
+library(stringr)
+library(lubridate)
+library(kableExtra)
+library(summarytools)
+library(forcats)
+library(DT)
+library(fontawesome)
+library(plotly)
+library(Hmisc)
+library(pyramid)
+library(ggsci)
+library(gtsummary)
+library(gt)
+library(data.table)
+library(finalfit)
+
+myfunc <- function(v1)  deparse(substitute(v1))
+
+prcnt<-function(x) paste0(as.character(round(x*100, 1)), "%")
+
+
+
+# readRDS("KHCC_20Aug2022.RDS")->khcc
+# readRDS("KHCC_20Aug2022_no_correction.RDS")->khcc
+# readRDS("KHCC_4Sep2022_pedscorrectionTo18Aug2022.RDS")->khcc
+# readRDS("KHCC_25Aug2022_pedsAndAdults_correctionTo18Aug2022.RDS")->khcc
+# readRDS("KHCC_30Aug2022_FixedDeadStatuscorrectionTo18Aug2022.RDS")->khcc
+# as.data.table(readRDS("KHCC_6Sep2022_fixed_dates_fixed.RDS"))->khcc
+readRDS("KHCC_8Sep2022_fixed_dates.RDS")->khcc
+
+AYA<- c("All AYAs", sort(unique(khcc$aya)))
+diseases<-  c("All histologies", sort(unique(khcc$Histology)))
+sites<- c("All sites",sort(unique(khcc$Site)))
+khcc<- khcc%>% 
+  mutate(TNM_STAGE= ifelse(is.na(TNM_STAGE),"UNK/NA", TNM_STAGE)) %>% 
+  mutate(TNM_STAGE=factor(TNM_STAGE, levels=c("In situ", "I", "II", "III", "IV", "UNK/NA" ))) %>% 
+  mutate(Sex=factor(Sex, levels=c("Male", "Female")))
+
+  
+STYLES=sort(c("Lancet", "JCO", "Nature", "JAMA", "Science", "UCSCGB", "Genome Browser",  "UChicago", "Style A", "Style B", "KHCC", "NEJM"))
+
+###############################
+  # load data in 'global' chunk so it can be shared by all users of the dashboard
+  library(datasets)
+  library(shinymanager)
+  # password protection
+  # 
+  # # define some credentials (you can also use sqlite database)
+  credentials <- data.frame(
+    user = c("shiny", "shinymanager", "khcc"),
+    password = c("azerty", "12345", "bigdata"),
+    stringsAsFactors = FALSE
+  )
+dependent = "Surv(OS, dead)"
+explanatory = Cs (Nationality, Sex, Site, Histology, seer_stage, TNM_STAGE, aya, period, ageGroup) #, ageGroup
+
+```
+
+```{r}
+# great reference about flexdashboard
+# https://www.youtube.com/watch?v=Opa_Nf88mCU 
+```
+
+# Version 2022.1.0 Date: `r Sys.Date()`
+
+## \## Column {.sidebar data-weight="650"}
+
+```{r}
+
+
+
+
+checkboxGroupInput("nationality", "Nationality?", c("Jordanian", "Syrian", "Other NonJordanian"), selected= c("Jordanian", "Syrian", "Other NonJordanian"), inline=T)
+checkboxGroupInput("gender", "Gender?", c("Male", "Female"), selected= c("Male", "Female"), inline=T)
+checkboxGroupInput("stage", "SEER-stage?", c("In-situ", "Localized", "Regional","Distant",  "Unknown"), selected= c("Localized", "Regional","Distant",  "Unknown"),  inline=T)
+
+
+selectInput('aya', 'AYA', AYA, selected="7.1 Melanoma")
+selectInput('histology', 'Histology', diseases, multiple=TRUE, selected="All histologies")
+selectInput('site', 'Site', sites, multiple=TRUE, selected="All sites")
+
+
+sliderInput("range", "Age (upper not included):",
+                  min = 0, max = 100,
+                  value = c(0,100))
+
+sliderInput("rangeYear", "Year (upper not included):",
+                  min = 2006, max = 2022 ,
+                  value = c(2006,2022), sep=NULL)
+
+renderText("*You can compare another period or age group by selecting a cutoff:")
+sliderInput("rangeYear2", "",
+                  min = 2006, max = 2022 ,
+                  value = 2017)
+
+#numericInput("rangeYear2", "Year for comparison (before and after):", 2017, min = 2006, max = 2022)
+sliderInput("ComparisonAge", "",
+                  min = 0, max = 100,
+                  value = 18)
+# numericInput("ComparisonAge", "Age cutoff for comparison:", 18, min = 0, max = 100)
+
+renderText("*Choose journal style and modify KM curves:")
+selectInput('STYLE', 'Journal style', STYLES, selected="Lancet")
+MONTHS<-c(12,24,36,48,60,72,84,96,108,120)
+selectInput('MONTHS', 'Months displayed on KM curves', MONTHS, selected=60)
+MO<- reactive(as.numeric(input$MONTHS))
+
+
+selectInput('PVAL', 'Show p value on KM curve', c(TRUE, FALSE), selected=TRUE)
+PVAL<- reactive(as.logical(input$PVAL))
+selectInput('LEGEND', 'Where to show KM legend', c("right", "left", "top", "bottom", "none"), selected="right")
+LEGEND<-reactive(as.character(input$LEGEND))
+
+renderText("*Parameters for Cox regression table and forest plot:")
+numericInput("LUMP", "Show only the top N levels in tables and Cox-regression analysis", value=4, min = 1, max = 20)
+LUMP<-reactive(as.numeric(input$LUMP))
+
+selectInput('whichStaging', 'Which staging system to use', c("seer_stage", "TNM_STAGE"), selected="seer_stage")
+whichStaging<-reactive(as.character(input$whichStaging))
+
+
+```
+
+## Row
+
+### Number of patients selected out of `r reactive(nrow(khcc))` patients fully treated.
+```{r}
+renderValueBox({valueBox(nrow(selectedData()), icon="fa-bed")})
+#knitr::include_graphics("khcf.jpg")
+```
+
+## Column {.tabset}
+
+```{r}
+
+ayaSelection <- reactive({ if( input$aya=="All AYAs")  return (unique(khcc$aya)) else return(input$aya)}) 
+histologySelection <- reactive({ if("All histologies" %in% input$histology)  return (unique(khcc$Histology)) else return(input$histology)}) 
+siteSelection <- reactive({ if( "All sites" %in% input$site)  return (unique(khcc$Site)) else return(input$site)}) 
+
+LABELS_PERIODS=reactive({c(paste(as.character(input$rangeYear[[1]]), "to", as.character(input$rangeYear2) ),
+                         paste(as.character(input$rangeYear2), "to", as.character(input$rangeYear[[2]])))})
+
+
+LABELS_AGEGROUPS<-reactive({ c(paste(as.character(input$range[[1]]), "to", as.character(input$ComparisonAge) ),
+                         paste(as.character(input$ComparisonAge), "to", as.character(input$range[[2]]))) })
+
+selectedData<- reactive({
+  khcc %>% 
+    filter(aya %in% ayaSelection()) %>%
+    filter(Histology %in% histologySelection()) %>%
+    filter(Site %in% siteSelection()) %>%
+    filter(Sex %in% unlist(input$gender)) %>%
+    filter(Nationality %in% unlist(input$nationality)) %>%
+    filter(seer_stage %in% unlist(input$stage)) %>%
+    filter(year>=input$rangeYear[[1]] & year<input$rangeYear[[2]]) %>%
+    filter(Age>=input$range[[1]] & Age<input$range[[2]]) %>%
+    mutate(period=NA) %>%
+    mutate(period=ifelse(year<input$rangeYear2, 1, period)) %>%
+    mutate(period=ifelse(year>=input$rangeYear2, 2, period)) %>%
+    mutate(period=factor(period, levels=c(1,2), labels=LABELS_PERIODS())) %>%
+    mutate(ageGroup=NA) %>%
+    mutate(ageGroup=ifelse(Age< input$ComparisonAge, 1, ageGroup)) %>%
+    mutate(ageGroup=ifelse(Age>=input$ComparisonAge, 2, ageGroup)) %>%
+    mutate(ageGroup=factor(ageGroup, levels=c(1,2), labels=LABELS_AGEGROUPS())) %>%
+    filter(!is.na(period), !is.na(ageGroup))
+})   
+   
+
+  
+  
+SCALE_COL<- reactive({
+  if (input$STYLE=="Lancet") scale_color_lancet()
+  else if  (input$STYLE=="JCO") scale_color_jco()
+  else if  (input$STYLE=="Nature") scale_color_npg()
+  else if  (input$STYLE=="JAMA") scale_color_jama()
+  else if  (input$STYLE=="Science") scale_color_aaas()
+  else if  (input$STYLE=="UCSCGB") scale_color_ucscgb()
+  else if  (input$STYLE=="Genome Browser") scale_color_igv()
+  else if  (input$STYLE=="UChicago") scale_color_uchicago()
+  else if  (input$STYLE=="Style A") scale_color_startrek()
+  else if  (input$STYLE=="Style B") scale_color_futurama()
+  else if  (input$STYLE=="KHCC") scale_color_d3()
+  else if  (input$STYLE=="NEJM") scale_color_nejm()
+  })
+
+
+
+
+
+SCALE_FILL<- reactive({
+  if (input$STYLE=="Lancet") scale_fill_lancet()
+  else if  (input$STYLE=="JCO") scale_fill_jco()
+  else if  (input$STYLE=="Nature") scale_fill_npg()
+  else if  (input$STYLE=="JAMA") scale_fill_jama()
+  else if  (input$STYLE=="Science") scale_color_aaas()
+  else if  (input$STYLE=="UCSCGB") scale_fill_ucscgb()
+  else if  (input$STYLE=="Genome Browser") scale_fill_igv()
+  else if  (input$STYLE=="UChicago") scale_fill_uchicago()
+  else if  (input$STYLE=="Style A") scale_fill_startrek()
+  else if  (input$STYLE=="Style B") scale_fill_futurama()
+  else if  (input$STYLE=="KHCC") scale_fill_d3()
+  else if  (input$STYLE=="NEJM") scale_fill_nejm()
+  })
+
+# function to draw horizontal bar charts with chi square p values
+chiPlot <- function(ds) {
+  CHISQUARE<-  ds %>%  
+    group_by(GROUP1) %>% 
+    dplyr::count(GROUP2) %>% 
+    ungroup %>%
+    tidyr::spread(GROUP1, n) %>%
+    replace(is.na(.),0) %>% 
+    select(-1) %>% 
+    chisq.test()%>% generics::glance() %>% 
+    mutate(p.value=round(as.numeric(p.value),4)) %>% 
+    mutate(p.value=ifelse(p.value==0, "Chi-square test p<0.0001", paste0("Chi-square test p=", as.character(p.value)))) %>% 
+    pull(p.value)  
+  ds %>%  
+    group_by(GROUP1) %>% 
+    dplyr::count(GROUP2) %>% 
+    ggplot(aes(x=GROUP1, y=n))+
+    geom_col(aes(fill=forcats::fct_rev(GROUP2)),  position = "fill")+ 
+    coord_flip()+
+    theme_classic() + 
+    scale_y_continuous(labels = scales::percent)+
+    theme(legend.position = "top", axis.text.x = element_text(angle = 0, vjust = 0.5), text=element_text(size=16))+
+    labs(x="", y="", fill="", caption=CHISQUARE)+
+    guides(fill=guide_legend(title=NULL,nrow=1, reverse=T))+
+    SCALE_COL()+   SCALE_FILL()
+  
+}
+
+  
+
+    
+
+
+fit1 <- reactive({
+  survfit(Surv(OS, dead) ~ 1, data = selectedData())
+})
+
+sumFit1<- reactive({
+summary(fit1(), c(12,60), extend=TRUE)
+})
+
+
+
+
+
+# # password protection
+
+auth_ui(id = "auth")
+
+auth <- callModule(
+        module = auth_server,
+        id = "auth",
+        check_credentials = check_credentials(credentials)
+  )
+
+
+
+
+```
+
+### Summary of results
+
+<br>
+This is an analysis of<B> `r reactive(nrow(selectedData()))` patients </B> registered on KHCC database from <B>`r reactive(input$rangeYear[[1]])` to `r reactive(input$rangeYear[[2]])`</B> with AYA classification: <B>`r reactive(input$aya)`</B> as defined by the AYA2020 classification, histology: <B>`r reactive(input$histology)`</B>, and Site: <B>`r reactive(input$site)`</B> . The age range selected is <B> `r reactive(min(selectedData()$Age))` to `r reactive(max(selectedData()$Age))` years.</B> There are <B>`r reactive(selectedData()%>% filter(Sex=="Male") %>% nrow)` males</B> and <B> `r reactive(selectedData()%>% filter(Sex=="Female") %>% nrow)` females. </B>
+
+The mean age of patients in this analysis is <B> `r reactive(round(mean(selectedData()$Age),1))`+/- SD `r reactive(round(sd(selectedData()$Age),1))` years </B> and the median is <B> `r reactive(median(selectedData()$Age))` years.</B>
+
+This cohort includes <B> `r reactive(selectedData()%>% filter(seer_stage=="Distant") %>% nrow)` patients with distant metastasis </B> according to SEER historic staging system that is used in this database.
+
+The <B>median follow up </B>for patients who did not die is <B> `r reactive(median(selectedData() %>% filter(dead==0) %>%pull(OS)))` months</B>. The 1 and 5 year overall survival of this cohort are<B> `r reactive(prcnt(sumFit1()$surv[1]))` +/- `r reactive(prcnt(sumFit1()$std.err[1]))` and `r reactive(prcnt(sumFit1()$surv[2]))` +/- `r reactive(prcnt(sumFit1()$std.err[2]))` ,respectively.</B>
+
+The stages of patients in this cohort are: <B> in-situ `r reactive(selectedData()%>% filter(seer_stage=="In-situ") %>% nrow)`, Localized `r reactive(selectedData()%>% filter(seer_stage=="Localized") %>% nrow)`, Regional `r reactive(selectedData()%>% filter(seer_stage=="Regional") %>% nrow)`, istant `r reactive(selectedData()%>% filter(seer_stage=="Distant") %>% nrow)` and unknown `r reactive(selectedData()%>% filter(seer_stage=="Unknown") %>% nrow)`. </B>
+
+
+### Demographics
+
+<B>Fig. Barchart showing number of patients per year(N=`r reactive(nrow(selectedData()))`).</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({
+  selectedData() %>% 
+    group_by(Sex) %>% 
+  count(year) %>% 
+  ggplot(aes(x=year, y=n, fill=Sex)) +
+  geom_col()+
+  # geom_text(
+  #   aes(label = n), 
+  #   position = position_stack(vjust = 0.5),
+  #   size=6,
+  #   col = "white",
+  #   fontface = "bold") +
+  SCALE_COL()+
+  SCALE_FILL()+
+  theme_classic()+
+  labs(x="", y="Patients per year")+
+  theme(text=element_text(size=20), axis.text.x=element_text(angle=45, hjust=0.9, vjust=0.9))
+  
+}, height=500, width=700)
+```
+
+
+<B>Table. Patients according to sex and age groups</B>
+
+```{r}
+tbl8<- reactive({selectedData() %>% 
+    dplyr::count(ageGroups, Sex) %>%  
+    tidyr::spread(Sex, n) %>% 
+    replace(is.na(.),0) %>% 
+    mutate(N=Female+Male) %>% 
+  dplyr::rename("Age"="ageGroups")  })
+
+renderTable({tbl8()})
+
+  
+```
+
+<BR> <B>Fig. Pie chart showing sex distribution among selected patients (N=`r reactive(nrow(selectedData()))`).</B>
+
+```{r}
+renderPlot({
+  selectedData() %>% 
+  dplyr::count(Sex) %>% mutate(total=sum(n)) %>% 
+  mutate(TEXT=paste(prcnt(n/total), "\n", Sex), prop=n/total) %>% 
+  mutate(ypos = cumsum(prop)- 0.5*prop ) %>% 
+  ggplot(aes(x="", y=prop, fill=Sex)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  theme_void() + 
+  theme(legend.position="none") +
+  geom_text(aes(y = ypos, label = rev(TEXT)), color = "white", size=6) +
+  SCALE_COL()+
+  SCALE_FILL()
+  # SCALE_FILL()_brewer(palette="Set1")
+}, height=500, width=700) 
+```
+
+<BR> <B>Fig. Barchart showing age and sex distribution of selected patients(N=`r reactive(nrow(selectedData()))`).</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({
+  selectedData() %>% 
+    group_by(Sex) %>% 
+  count(ageGroups) %>% 
+  ggplot(aes(x=ageGroups, y=n, fill=Sex)) +
+  geom_col()+
+  # geom_text(
+  #   aes(label = n), 
+  #   position = position_stack(vjust = 0.5),
+  #   size=6,
+  #   col = "white",
+  #   fontface = "bold") + 
+  SCALE_COL()+
+  SCALE_FILL()+
+  scale_x_discrete("")+
+  theme_classic()+
+  labs(x="", y="")+
+  theme(text=element_text(size=20), axis.text.x=element_text(angle=45, hjust=0.9, vjust=0.9))
+  
+}, height=500, width=700)
+```
+
+<BR> <B>Fig. Population pyramid showing age and sex distribution of selected patients (N=`r reactive(nrow(selectedData()))`).</B>
+
+```{r}
+p1 <- reactive({
+  selectedData()  %>% 
+  group_by(ageGroups) %>%
+  dplyr::count(Sex) %>%
+  filter(!is.na(ageGroups))  })
+
+
+renderPlot({
+  p1() %>% 
+    ggplot(aes(x = ifelse(test = Sex == "Male", yes = -n, no = n), y = ageGroups, fill = Sex)) +
+    geom_col() +
+    lemon::scale_x_symmetric(labels = abs) +
+    labs(x = "Population")+
+    SCALE_COL()+
+    SCALE_FILL()+
+    # SCALE_COL()+   SCALE_FILL()
+    #SCALE_FILL()_manual(labels = c("Female", "Male"), values = c("red", "blue")) +
+    theme_minimal()+
+    theme(text=element_text(size=18))+
+    labs(x="", y="")}, height=600, width=600)
+
+
+
+
+
+```
+
+### AYA
+
+The adapted classification scheme for tumors of adolescents and young adults (AYA) is based on the classification scheme proposed by RD Barr and colleagues. The SEER AYA site recode variable was updated from the original ICD-O-2 based classification scheme using ICD-O-3 definitions for cancer morphology and topography.
+
+For more info visit: <https://seer.cancer.gov/ayarecode/>
+
+<B>Fig.Pyramid graph showing adolescent and young adults classification (AYA 2020) cancers among selected patients (N=`r reactive(nrow(selectedData()))`).</B> Only top 10 most common cancers can be shown.
+
+```{r}
+
+
+ayaF<- reactive({selectedData() %>% dplyr::count(aya) %>% arrange(-n) %>% slice_head(n=10) %>% mutate(aya=sub("^\\S+\\s+", '', aya)) %>%  pull(aya) %>% as.factor() %>% rev()})
+
+
+p2<-reactive({
+  ayaF<-ayaF()
+  selectedData() %>% 
+  group_by(aya) %>%
+  dplyr::count(Sex) %>%
+  filter(!is.na(aya)) %>%
+  ungroup(aya) %>%
+  mutate(aya=sub("^\\S+\\s+", '', aya)) %>% 
+  filter(aya %in% ayaF) }) 
+
+           
+renderPlot({
+  ayaF<-ayaF()
+  p2() %>%
+    ggplot(aes(x = ifelse(test = Sex == "Male", yes = -n, no = n), y = factor(aya, levels=ayaF), fill = Sex)) +
+    geom_col() +
+    lemon::scale_x_symmetric(labels = abs) +
+    labs(x = "Population")+
+    SCALE_COL()+   SCALE_FILL()+
+    theme_minimal()+
+    theme(text=element_text(size=18))+
+    labs(x="", y="") }, height=600, width=1000)
+
+
+
+```
+
+<BR> <B>Fig.Table showing adolescent and young adults classification (AYA 2020) of cancers among selected patients (N=`r reactive(nrow(selectedData()))`).</B>
+
+```{r}
+tbl12<- reactive({selectedData() %>% 
+    count(aya) %>%
+    arrange(-n) %>% 
+    rename("AYA"="aya")  })
+
+renderTable({tbl12()})
+
+
+
+
+```
+
+### Histologies
+
+<B>Fig.Table showing histologies according to ICD-O-10 classification of cancers among selected patients (N=`r reactive(nrow(selectedData()))`).</B>
+
+```{r}
+tbl2<- reactive({selectedData() %>% 
+    count(Histology) %>%
+    arrange(-n) %>% 
+    rename(Histology=Histology)  })
+
+renderTable({tbl2()})
+```
+
+### Primary sites
+
+<B>Fig.Table showing sites according to ICD-O-10 classification of cancers among selected patients (N=`r reactive(nrow(selectedData()))`).</B>
+
+```{r}
+tbl1<- reactive({selectedData() %>% 
+    count(Site) %>%
+    arrange(-n) %>% 
+    rename(Primary_Site=Site)  })
+
+renderTable({tbl1()})
+```
+
+### Table
+
+<B>Table. Patient characteristics of selected patients (N=`r reactive(nrow(selectedData()))`).</B>
+```{r fig.height=4, fig.width=4}
+render_gt({selectedData() %>% 
+    select(Nationality, Age, Sex, year,seer_stage, aya, TNM_STAGE, Histology, Site, dead) %>% 
+    mutate(across(is.character, ~forcats::fct_lump_n(., LUMP(), other_level="Others"))) %>% 
+    tbl_summary() %>% 
+    as_gt()})
+```
+
+
+
+### Survival of all pateints {data-commentary-width="300"}
+
+Median survival for selected patients = <B> `r reactive(round(MEDSUR1()[1,2],0))` months (CI= `r reactive(round(MEDSUR1()[1,3],0))` to `r reactive(round(MEDSUR1()[1,4],0))`).</B>\
+Note: Median survival is the time point when 50% of individuals had event/death. If median survival is NA then it was not reached. Scroll below the figure to see survival table with estimates.
+
+```{r}
+renderPlot({
+  MO<-MO()
+  FIT<- ggsurvplot(
+            fit1(),                     
+           data = selectedData(),
+           surv.scale="percent",
+            break.x.by=12,
+           legend="none",
+            xlim=c(0,MO()), axes.offset=F,
+            xlab="Months after diagnosis")
+            FIT$plot+ SCALE_COL() + SCALE_FILL()}, height=500, width=700)
+
+
+
+
+```
+
+```{r}
+tbl6<- reactive({
+  fit<-fit1()
+  
+  summary(fit,c(12,24,36,48,60,120), extend=TRUE)->s
+  
+  data_frame(`Duration in months`=s$time,
+             `N at risk`=s$n.risk,
+             `N of events`= round(s$n.event,0), 
+             Survival=prcnt(s$surv),
+             SE=prcnt(s$std.err)
+    
+             )
+})
+
+renderTable({tbl6()})
+
+
+MEDSUR1<- reactive({
+  surv_median(fit1())
+})
+
+
+
+```
+
+### Survival by SEER-Stage {data-commentary-width="300"}
+
+For comparison with other countries, visit [Globocan](https://gco.iarc.fr/survival/survmark/visualizations/viz8/?groupby=%22country%22&cancer=%22COLO%22&country=%22Australia%22&gender=%220%22&age_group=%2215-99%22&show_ci=%22%22&countries=%5B%22Australia%22%2C%22Canada%22%2C%22Denmark%22%2C%22Ireland%22%2C%22New+Zealand%22%2C%22Norway%22%2C%22UK%22%5D)
+
+```{r}
+fit2 <- reactive({
+  survfit(Surv(OS, dead) ~ seer_stage, data = selectedData())
+})
+
+
+TNMisNA<- reactive({
+selectedData() %>% filter(is.na(TNM_STAGE)| TNM_STAGE=="UNK/NA") %>% nrow  
+})
+
+renderPlot({ 
+  FIT<-ggsurvplot(
+           fit2(),                     # survfit object with calculated statistics.
+           data = selectedData(),
+           text=20, 
+           legend=LEGEND(),
+           surv.scale="percent",
+            break.x.by=12,
+            xlim=c(0,MO()), axes.offset=F,
+           pval = PVAL(),
+            xlab="Months after diagnosis"
+           )
+  FIT$plot+ SCALE_COL() + SCALE_FILL()}, height=500, width=700)
+
+
+
+tbl4<- reactive({
+  fit<-fit2()
+  summary(fit2(),12, extend=TRUE)->s1
+  summary(fit2(),60, extend=TRUE)->s5
+  L=length(fit$strata)
+  data_frame(Stages=names(fit$strata)[1:L], 
+             N=fit$n[1:L], 
+             `1 year survival`=paste(prcnt(s1$surv[1:L]), "+/-", prcnt(s1$std.err[1:L])),
+             
+             `5 year survival`=paste(prcnt(s5$surv[1:L]), "+/-", prcnt(s5$std.err[1:L]))
+             )
+})
+
+renderTable({tbl4()})
+
+
+
+
+
+
+```
+
+<BR> <B>Patients according to SEER stages</B>
+
+```{r}
+tbl3<- reactive({selectedData() %>% 
+    dplyr::count(ageGroups, seer_stage) %>%  
+    tidyr::spread(seer_stage, n) %>%  
+    replace(is.na(.),0) %>% 
+  dplyr::rename("Age"="ageGroups")  })
+
+renderTable({tbl3()})
+
+
+  
+```
+
+<BR>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({
+  selectedData() %>% 
+  group_by(seer_stage) %>% 
+  count(ageGroups) %>% 
+  ggplot(aes(x=ageGroups, y=n, fill= rev(seer_stage))) +
+  geom_col()+
+  SCALE_COL()+   SCALE_FILL()+
+  scale_x_discrete("Age")+
+  theme_classic()+
+  labs(fill="SEER stage")+
+  theme(text=element_text(size=20), axis.text.x=element_text(angle=45, hjust=0.9, vjust=0.9))
+  }, height=500, width=700) 
+
+
+
+```
+
+<BR>
+
+```{r}
+renderPlot({
+  selectedData() %>% 
+  dplyr::count(seer_stage) %>%{.->>b} %>% 
+  mutate(total=sum(n)) %>%  
+  arrange(desc(n)) %>% 
+  mutate(TEXT=paste(prcnt(n/total), "\n",seer_stage), prop=n*100/total) %>% 
+  mutate(ypos = cumsum(prop)- 0.5*prop ) %>% 
+  ggplot(aes(x="", y=prop, fill=seer_stage)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0)+
+    SCALE_COL()+   SCALE_FILL()+
+  # SCALE_FILL()_brewer(palette="Set1")+
+  theme_void()
+}, height=500, width=700) 
+
+
+
+```
+
+### Survival by AJCC_TNM stage {data-commentary-width="300"}
+
+For comparison with other countries, visit [Globocan](https://gco.iarc.fr/survival/survmark/visualizations/viz8/?groupby=%22country%22&cancer=%22COLO%22&country=%22Australia%22&gender=%220%22&age_group=%2215-99%22&show_ci=%22%22&countries=%5B%22Australia%22%2C%22Canada%22%2C%22Denmark%22%2C%22Ireland%22%2C%22New+Zealand%22%2C%22Norway%22%2C%22UK%22%5D)
+
+```{r}
+fit7 <- reactive({
+  survfit(Surv(OS, dead) ~ TNM_STAGE, data = selectedData() %>% filter(TNM_STAGE!="UNK/NA"))
+})
+
+renderPlot({ 
+  FIT<-ggsurvplot(
+           fit7(),                     # survfit object with calculated statistics.
+           data = selectedData(),
+           text=20, 
+           legend=LEGEND(),
+           surv.scale="percent",
+            break.x.by=12,
+            xlim=c(0,MO()), axes.offset=F,
+           pval = PVAL(),
+            xlab="Months after diagnosis")
+        FIT$plot + SCALE_COL() + SCALE_FILL()}, height=500, width=700)
+
+
+tbl16<- reactive({
+  fit<-fit7()
+  summary(fit7(),12, extend=TRUE)->s1
+  summary(fit7(),60, extend=TRUE)->s5
+  L=length(fit$strata)
+  data_frame(Stages=names(fit$strata)[1:L], 
+             N=fit$n[1:L], 
+             `1 year survival`=paste(prcnt(s1$surv[1:L]), "+/-", prcnt(s1$std.err[1:L])),
+             
+             `5 year survival`=paste(prcnt(s5$surv[1:L]), "+/-", prcnt(s5$std.err[1:L]))
+             )
+})
+
+renderTable({tbl16()})
+
+
+
+
+
+
+```
+
+<BR>
+
+```{r}
+renderPlot({
+  selectedData() %>% 
+  dplyr::count(TNM_STAGE) %>%{.->>b} %>% 
+  filter(TNM_STAGE!="UNK/NA") %>% 
+  mutate(total=sum(n)) %>%  
+  arrange(desc(n)) %>% 
+  mutate(TEXT=paste(prcnt(n/total), "\n", TNM_STAGE), prop=n*100/total) %>% 
+  mutate(ypos = cumsum(prop)- 0.5*prop ) %>% 
+  ggplot(aes(x="", y=prop, fill=TNM_STAGE)) +
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0)+
+  theme_void()+
+    SCALE_COL()+   SCALE_FILL()+
+  labs(caption=paste("Not available TNM stage=", as.character(b$n[b$TNM_STAGE=="UNK/NA"])))
+}, height=500, width=700) 
+
+
+
+```
+
+<BR> <B>Patients by TNM stage</B>
+
+```{r}
+tbl10<- reactive({selectedData() %>% 
+    dplyr::count(ageGroups, TNM_STAGE) %>%  
+    tidyr::spread(TNM_STAGE, n) %>% 
+    replace(is.na(.),0) %>% 
+  dplyr::rename("Age"="ageGroups")  })
+
+renderTable({tbl10()})
+
+
+  
+```
+
+### Compare periods {data-commentary-width="300"}
+
+```{r}
+
+
+
+
+fit3 <- reactive({
+  survfit(Surv(OS, dead) ~ period, data = selectedData() %>%filter(Age>=input$range[[1]] & Age<input$range[[2]]) )
+})
+
+
+renderPlot({ 
+  FIT<-ggsurvplot(
+           fit3(),                     
+           data =  selectedData() %>% filter(Age>=input$range[[1]] & Age<input$range[[2]]),
+           surv.scale="percent",
+           break.x.by=12,
+           xlim=c(0,MO()), axes.offset=F,
+           legend=LEGEND(),
+           pval = PVAL(),
+           legend.title="Period",
+           legend.labs=LABELS_PERIODS(),
+           xlab="Months after diagnosis")
+  FIT$plot+ SCALE_COL() + SCALE_FILL()}, height=500, width=700)
+```
+
+<BR> <B>Table. 1 and 5-year survival of selected patients in the 2 periods.</B>
+
+```{r}
+tbl5<- reactive({
+  fit<-fit3()
+  summary(fit,12, extend=TRUE)->s1
+  summary(fit,60, extend=TRUE)->s5
+  data_frame(Periods=c("Period 1", "Period 2"), 
+             N=fit$n[1:2], 
+             `1 year survival`=paste(prcnt(s1$surv[1:2]), "+/-", prcnt(s1$std.err[1:2])),
+             
+             `5 year survival`=paste(prcnt(s5$surv[1:2]), "+/-", prcnt(s5$std.err[1:2]))
+             )
+})
+
+renderTable({tbl5()}, digit=0)
+          
+
+```
+
+<BR><B>Fig. Sex distribution in the two selected periods.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ selectedData() %>% filter(Age>=input$range[[1]] & Age<input$range[[2]]) %>% mutate(GROUP1=period, GROUP2=Sex) %>% chiPlot()}, height=200, width=500)
+```
+
+<BR><B>Fig. SEER stage distribution in the two selected periods.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ selectedData() %>% filter(Age>=input$range[[1]] & Age<input$range[[2]]) %>% mutate(GROUP1=period, GROUP2=seer_stage) %>% chiPlot()}, height=200, width=500)
+```
+
+<BR><B>Fig. TNM distribution according to gender in selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ selectedData() %>% filter(Age>=input$range[[1]] & Age<input$range[[2]]) %>% mutate(GROUP1=period, GROUP2=TNM_STAGE) %>% chiPlot()}, height=200, width=500)
+```
+
+
+<BR><B>Fig. Age distribution in the two selected periods.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ selectedData() %>% filter(Age>=input$range[[1]] & Age<input$range[[2]]) %>% mutate(GROUP1=period, GROUP2=ageGroups) %>% chiPlot()+guides(fill=guide_legend(nrow=2, reverse=T))}, height=200, width=500)
+```
+
+<B>Fig. Boxplot showing age comparison between selected patients diagnosed in 2 periods.</B>
+
+```{r}
+renderPlot({ggboxplot(selectedData(), x = "period", y = "Age",
+                color = "period", 
+                add = "jitter", shape = "period")+
+    stat_compare_means(label.y = 100)+
+    SCALE_COL()+SCALE_FILL()}, height=500, width=500)
+```
+
+
+### Compare genders {data-commentary-width="300"}
+
+```{r}
+fit12 <- reactive({  survfit(Surv(OS, dead) ~ Sex, data = selectedData()) })
+
+renderPlot({ 
+  FIT<-ggsurvplot(
+           fit12(),                     
+           data =  selectedData(),
+           surv.scale="percent",
+            break.x.by=12,
+            xlim=c(0,MO()), axes.offset=F,
+           legend=LEGEND(),
+           pval = PVAL(),
+           legend.title="Sex",
+           legend.labs=c("Male","Female"),
+           xlab="Months after diagnosis")
+FIT$plot+ SCALE_COL() + SCALE_FILL()}, height=500, width=700)
+```
+
+<BR> <B>Table. 1 and 5-year survival of selected patients according to gender.</B>
+
+```{r}
+tbl15<- reactive({
+  fit<-fit12()
+  summary(fit,12, extend=TRUE)->s1
+  summary(fit,60, extend=TRUE)->s5
+  data_frame(Genders=c("Male", "Female"), 
+             N=fit$n[1:2], 
+             `1 year survival`=paste(prcnt(s1$surv[1:2]), "+/-", prcnt(s1$std.err[1:2])),
+             
+             `5 year survival`=paste(prcnt(s5$surv[1:2]), "+/-", prcnt(s5$std.err[1:2]))
+             )
+})
+
+renderTable({tbl15()}, digit=0)
+          
+
+```
+
+<BR><B>Fig. SEER stage distribution according to gender in selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ selectedData() %>% filter(Age>=input$range[[1]] & Age<input$range[[2]]) %>% mutate(GROUP1=Sex, GROUP2=seer_stage) %>% chiPlot()}, height=200, width=500)
+```
+
+<BR><B>Fig. TNM distribution according to gender in selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ selectedData() %>% filter(Age>=input$range[[1]] & Age<input$range[[2]]) %>% mutate(GROUP1=Sex, GROUP2=TNM_STAGE) %>% chiPlot()}, height=200, width=500)
+```
+
+<BR><B>Fig. Age distribution according to gender in selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ selectedData() %>% filter(Age>=input$range[[1]] & Age<input$range[[2]]) %>% mutate(GROUP1=Sex, GROUP2=ageGroups) %>% chiPlot()+guides(fill=guide_legend(nrow=2, reverse=T))}, height=200, width=500)
+```
+
+<B>Fig. Boxplot showing age comparison between males and females in selected patients.</B>
+
+
+```{r}
+renderPlot({ggboxplot(selectedData(), x = "Sex", y = "Age",
+                color = "Sex", 
+                add = "jitter", shape = "Sex")+
+    stat_compare_means(label.y = 100)+
+    SCALE_COL()+SCALE_FILL()}, height=500, width=500)
+```
+
+### Compare age groups {data-commentary-width="300"}
+
+<B>Fig. Compare KM curves of 2 selected age groups. </B>
+
+```{r}
+fit8 <- reactive({
+  survfit(Surv(OS, dead) ~ ageGroup, data = selectedData() %>% filter(year>=input$rangeYear[[1]] & year<input$rangeYear[[2]]) )
+})
+
+
+renderPlot({ 
+  FIT<-ggsurvplot(
+           fit8(),                     
+           data =  selectedData() %>% filter(year>=input$rangeYear[[1]] & year<input$rangeYear[[2]]),
+           surv.scale="percent",
+            break.x.by=12,
+            xlim=c(0,MO()), axes.offset=F,
+           pval = PVAL(),
+           legend=LEGEND(),
+           legend.title="Age range",
+           legend.labs=LABELS_AGEGROUPS(),
+            xlab="Months after diagnosis")
+FIT$plot+ SCALE_COL() + SCALE_FILL()}, height=500, width=700)
+
+
+
+tbl11<- reactive({
+  fit<-fit8()
+  summary(fit,12, extend=TRUE)->s1
+  summary(fit,60, extend=TRUE)->s5
+  data_frame(Group=c("Age group 1", "Age group 2"), 
+              N=fit$n[1:2], 
+             `1 year survival`=paste(prcnt(s1$surv[1:2]), "+/-", prcnt(s1$std.err[1:2])),
+             `5 year survival`=paste(prcnt(s5$surv[1:2]), "+/-", prcnt(s5$std.err[1:2]))
+             )
+})
+
+renderTable({tbl11()}, digits=0)
+          
+
+```
+
+<BR> <B>Fig. Sex distribution according to age in selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({  selectedData() %>% filter(year>=input$rangeYear[[1]] & year<input$rangeYear[[2]]) %>% mutate(GROUP1=ageGroup, GROUP2=Sex) %>% chiPlot()}, height=200, width=500)
+```
+
+<BR> <B>Fig. SEER stage distribution according to age in selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({  selectedData() %>% filter(year>=input$rangeYear[[1]] & year<input$rangeYear[[2]]) %>% mutate(GROUP1=ageGroup, GROUP2=seer_stage) %>% chiPlot()}, height=200, width=500)
+```
+
+<BR><B>Fig. TNM distribution according to gender in selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ selectedData() %>% filter(Age>=input$range[[1]] & Age<input$range[[2]]) %>% mutate(GROUP1=ageGroup, GROUP2=TNM_STAGE) %>% chiPlot()}, height=200, width=500)
+```
+
+
+### Cox Multivariable regression {data-commentary-width="300"}
+
+<B>Table. Univariable and Multivariable Cox Regression Hazards table for selected patients.</B>
+```{r}
+library(finalfit)
+
+
+t<- reactive({ 
+ds<- as.data.frame(selectedData())  
+lapply(ds[, explanatory], function(x)length(unique(x)))->a
+names(a)[a>1]-> explanatory
+explanatory<- explanatory[explanatory!= switch(whichStaging(), seer_stage="TNM_STAGE", TNM_STAGE="seer_stage")]
+ds %>%  mutate(across(explanatory, ~forcats::fct_infreq(.))) %>% mutate(across(explanatory, ~forcats::fct_lump_n(., LUMP(), other_level="Others"))) %>%    finalfit(dependent, explanatory)
+
+})
+#mutate(across(explanatory, ~forcats::fct_drop(.)))  %>%
+renderTable({t()})
+```
+
+
+
+
+
+
+### Forest plot {data-commentary-width="300"}
+
+<B>Fig. Multivariable Cox Regression Hazards.</B>
+```{r}
+renderPlot({
+  ds<- as.data.frame(selectedData())
+  lapply(ds[, explanatory], function(x)length(unique(x)))->a
+names(a)[a>1]-> explanatory
+explanatory<- explanatory[explanatory!= switch(whichStaging(), seer_stage="TNM_STAGE", TNM_STAGE="seer_stage")]
+ds   %>% mutate(across(explanatory, ~forcats::fct_infreq(.)))%>% mutate(across(explanatory, ~forcats::fct_lump_n(., LUMP(), other_level="Others"))) %>%   hr_plot(dependent, explanatory, dependent_label = "Survival")
+})
+
+```
+
+### Compare to SEER {data-commentary-width="300"}
+
+<br> Comparison to SEER can be inaccurate for many reasons. Although we match patients for age, sex and diagnosis; patients' general condition and other factors are difficult to match. Jordanian patients' mortality is obtained from national registry and depend on accuracy and timing of death registration. For patients who did not die the follow up was extended to the last day of collecting patients on the registry. For nonjordanians, death is frequently not recorded and can be missed if death occures outside Jordan. Their short follow up within the country make their mortality inflated.
+
+This is a comparison with<B> `r reactive(nrow(seerData()))` patients </B> registered on SEER database with a diagnosis of <B>`r reactive(input$aya)`</B> as defined by the AYA2020 classificaiton. There are `r reactive(seerData()%>% filter(Sex=="Male") %>% nrow)` males and `r reactive(seerData()%>% filter(Sex=="Female") %>% nrow)` females. The stages of patients in this cohort are: <B> Localized `r reactive(seerData()%>% filter(seer_stage=="Localized") %>% nrow)`, Regional `r reactive(seerData()%>% filter(seer_stage=="Regional") %>% nrow)` , and Distant `r reactive(seerData()%>% filter(seer_stage=="Distant") %>% nrow)`. </B>
+
+Using log-rank test can be misleading when a large number of patients is included. So please use the value listed here with caution. If the value reported is zero then it is below 0.001 and can be reported as such<B> `r reactive(paste("P=", as.character(round(pchisq(diff4()$chisq, length(diff4()$n) - 1, lower.tail = FALSE), 3))))`
+
+```{r fig.height=4, fig.width=4}
+readRDS("SEER2012.RDS")->seer
+
+ayaSelectionSEER <- reactive({ if( input$aya=="All AYAs")  return (str_sub(unique(seer$aya),1,5)) else return(str_sub(input$aya,1,5))}) 
+histologySelectionSEER <- reactive({ if("All histologies" %in% input$histology)  return (str_sub(unique(khcc$Histology),1,5)) else return(str_sub(input$histology,1,5)) }) 
+siteSelectionSEERp <- reactive({ if("All sites" %in% input$site)  return (str_sub(unique(seer$Site),1,3)) else return(str_sub(input$site,2,4))}) 
+# This fixes the problem for numbers like 025 should be "25"
+siteSelectionSEER<- reactive(as.character(as.numeric(siteSelectionSEERp())))
+
+seerData<- reactive({
+    seer %>% filter(aya %in% ayaSelectionSEER()) %>% 
+    filter(Histology %in% histologySelectionSEER()) %>% 
+    filter(Site %in% siteSelectionSEER()) %>% 
+    filter(Age>=input$range[[1]] & Age<input$range[[2]]) %>%
+    filter(Sex %in% unlist(input$gender)) %>% 
+    filter(seer_stage %in% unlist(input$stage))
+})
+
+
+
+DS1<- reactive({selectedData()%>%    dplyr::bind_rows(seerData())})
+
+
+fit4 <- reactive({ survfit(Surv(OS, dead) ~ Group, data = DS1())})
+
+
+diff4 <- reactive({survdiff(Surv(OS / 12, dead) ~ Group, data = DS1())})
+
+ renderPlot({
+   FIT<-ggsurvplot(
+            fit4(),                     # survfit object with calculated statistics.
+            data = DS1(),
+            surv.scale="percent",
+            main="All stages",
+            break.x.by=12,
+            xlim=c(0,MO()), axes.offset=F,
+            pval = PVAL(),
+            legend=LEGEND(),
+            xlab="Months after diagnosis")
+   FIT$plot+SCALE_COL()+SCALE_FILL()
+ }, height=500, width=700)
+ 
+ 
+ 
+```
+
+<B>Fig. SEER stage distribution in SEER (N=`r reactive(nrow(seerData()))`) and KHCC (N=`r reactive(nrow(selectedData()))`) registries for selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ DS1() %>% mutate(GROUP1=Group, GROUP2=seer_stage) %>% chiPlot()}, height=200, width=500)
+```
+
+<B>Fig. Sex distribution in SEER (N=`r reactive(nrow(seerData()))`) and KHCC (N=`r reactive(nrow(selectedData()))`) registries for selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ DS1() %>% mutate(GROUP1=Group, GROUP2=Sex) %>% chiPlot()}, height=200, width=500)
+```
+
+<B>Fig. Age distribution in SEER (N=`r reactive(nrow(seerData()))`) and KHCC (N=`r reactive(nrow(selectedData()))`) registries for selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+renderPlot({ DS1() %>% mutate(GROUP1=Group, GROUP2=ageGroups) %>% chiPlot()+guides(fill=guide_legend(nrow=2, reverse=T))}, height=200, width=500)
+```
+
+
+<B>Fig. Boxplot showing age comparison between selected patients in SEER (N=`r reactive(nrow(seerData()))`) and KHCC (N=`r reactive(nrow(selectedData()))`).</B>
+
+
+```{r}
+renderPlot({ggboxplot(DS1(), x = "Group", y = "Age",
+                color = "Group", 
+                add = "jitter", shape = "Group")+
+    stat_compare_means(label.y = 100)+
+    SCALE_COL()+SCALE_FILL()}, height=500, width=500)
+```
+<BR>
+<B>Table. Survival of SEER (N=`r reactive(nrow(seerData()))`) and KHCC (N=`r reactive(nrow(selectedData()))`) selected patients.</B>
+
+```{r fig.height=4, fig.width=4}
+fitSeer1<- reactive({ survfit(Surv(OS, dead) ~ 1, data = seerData())}) 
+
+tbl13<- reactive({
+  fit<-fit1()
+  fitSEER<-fitSeer1()
+  summary(fit,c(12,24,36,48,60), extend=TRUE)->s
+  summary(fitSEER,c(12,24,36,48,60), extend=TRUE)->sSEER
+  
+  data_frame(`Duration in months`=s$time[1:5],
+             `Survival KHCC`=prcnt(s$surv[1:5]),
+             `SE KHCC`=prcnt(s$std.err[1:5]),
+             `Survival SEER`=prcnt(sSEER$surv[1:5]),
+             `SE SEER`=prcnt(sSEER$std.err[1:5]),
+             
+    
+             )
+})
+
+renderTable({tbl13()}, digits=0)
+
+
+
+
+```
+
+<B>Table. Comparison of the 5-years survival of SEER (N=`r reactive(nrow(seerData()))`) and KHCC (N=`r reactive(nrow(selectedData()))`) registries for selected patients.</B>
+
+```{r}
+fitAgeGroups<- reactive({ survfit(Surv(OS, dead) ~ ageGroups, data = selectedData())})
+fitSeerAgeGroups<- reactive({ survfit(Surv(OS, dead) ~ ageGroups, data = seerData())}) 
+
+
+results=c()
+dif<- reactive({
+DS<- DS1()
+for (factor in levels(DS$ageGroups)) {
+  if (sum(DS$ageGroups==factor)>0){
+  
+  diff <-try(survdiff(Surv(OS, dead) ~ Group, data = DS[DS$ageGroups==factor,]))
+  if (class(diff) == "try-error") {p="NA"}
+  else  {
+    p<-round(pchisq(diff$chisq, length(diff$n) - 1, lower.tail = F),3)
+    p<- ifelse(p<0.001, "<0.001", as.character(p))}
+  results<-c(results, p)}}
+return(results)
+})
+
+
+#
+
+
+
+
+
+tbl14<- reactive({
+  fit<-fitAgeGroups()
+  fitSEER<-fitSeerAgeGroups()
+  summary(fit,60, extend=TRUE)->s
+  summary(fitSEER,60, extend=TRUE)->sSEER
+  L<-length(fit$strata)
+  diff<- dif()
+  data_frame(`Age Group`=names(fit$strata)[1:L],
+             `Survival KHCC`=prcnt(s$surv[1:L]),
+             `SE KHCC`=prcnt(s$std.err[1:L]),
+             `Survival SEER`=prcnt(sSEER$surv[1:L]),
+             `SE SEER`=prcnt(sSEER$std.err[1:L]),
+              p=diff[1:L]
+             
+             
+    
+             )%>% replace(is.na(.), 0)
+})
+
+
+
+renderTable({tbl14()}, digits=0)
+
+
+
+
+
+```
+
+<B>Table. Comparison of characteristics of SEER (N=`r reactive(nrow(seerData()))`) and KHCC (N=`r reactive(nrow(selectedData()))`) registries for selected patients.</B>
+```{r}
+render_gt({DS1() %>% 
+    select(Group, Age, Sex, seer_stage) %>% 
+    mutate(across(is.character, ~forcats::fct_lump_n(., LUMP(), other_level="Others"))) %>% 
+    tbl_summary(by=Group) %>%
+    add_p() %>% 
+    as_gt()})
+```
+
+
+### Download Data {data-commentary-width="300"}
+
+```{r}
+
+renderDataTable(selectedData(), extensions="Buttons",
+                options=list(dom="Blfrtip",
+                              pageLength = 1000,
+                             buttons=c("copy", "csv", "excel", "pdf")))
+```
+
+
